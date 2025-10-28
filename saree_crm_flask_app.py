@@ -1,18 +1,19 @@
 """
-Saree CRM - Single-file Flask + SQLite app (Improved)
-Features added in this version:
-- Full CRUD: Add / Edit / Delete for Customers, Orders, Follow-ups via the web UI
-- Dashboard improvements: Pending follow-ups KPI, better charts with percentages on pie
-- Export endpoints: download CSV for Customers, Orders, Follow-ups
-- Shows where data is saved (SQLite file path) in the Dashboard
-- Business name set to: Mana Saree Collection (shown in navbar & dashboard)
+Saree CRM - Single-file Flask + SQLite app (v3)
+Updated per user's request (features):
+- Business name set to: vihaa.vastra_sarees
+- Orders now include: purchase_type (Online/Offline) and payment_mode (Cash/UPI/Pending)
+- Payments tab (auto-generated) reads payment details directly from Orders (no manual payment entry)
+- Payments summary: pending payments, monthly cashflow, mode split, export filtered payments
+- Search boxes on Customers, Orders, Follow-ups pages
+- Orders: show customer name, sortable with pending payments on top by default, monthly filter
+- Follow-up pending count shown on Dashboard
+- Safe DB migration: adds new columns if missing
 
-Run locally:
+Run:
 - pip install flask flask_sqlalchemy
 - python3 saree_crm_flask_app.py
 - Open http://127.0.0.1:5000
-
-Notes: This is still a lightweight local app intended for small-business use. For multi-user production use, migrate DB to PostgreSQL and add authentication.
 """
 from flask import Flask, request, redirect, url_for, jsonify, render_template_string, send_file
 from flask_sqlalchemy import SQLAlchemy
@@ -22,7 +23,7 @@ import datetime
 import csv
 
 # ---- Config ----------------------------------------------------------------
-BUSINESS_NAME = "Mana Saree Collection"
+BUSINESS_NAME = "vihaa.vastra_sarees"
 DB_FILENAME = 'saree_crm.db'
 DB_PATH = os.path.join(os.path.dirname(__file__), DB_FILENAME)
 
@@ -52,12 +53,15 @@ class Order(db.Model):
     customer_id = db.Column(db.String(20), nullable=False)
     saree_type = db.Column(db.String(120))
     amount = db.Column(db.Integer)
-    payment_status = db.Column(db.String(20))
+    payment_status = db.Column(db.String(20))  # Paid / Pending
     delivery_status = db.Column(db.String(30))
     remarks = db.Column(db.Text)
+    # New fields
+    purchase_type = db.Column(db.String(20), default='Online')  # Online / Offline
+    payment_mode = db.Column(db.String(20), default='Pending')  # Cash / UPI / Pending
 
     def to_dict(self):
-        return {k: getattr(self, k) for k in ['order_id','date','customer_id','saree_type','amount','payment_status','delivery_status','remarks']}
+        return {k: getattr(self, k) for k in ['order_id','date','customer_id','saree_type','amount','payment_status','delivery_status','remarks','purchase_type','payment_mode']}
 
 class FollowUp(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -73,6 +77,25 @@ class FollowUp(db.Model):
     def to_dict(self):
         return {k: getattr(self, k) for k in ['fu_id','date','customer_name','insta','topic','next_date','status','remarks']}
 
+# --- DB migration helper ----------------------------------------------------
+def ensure_columns():
+    # Add new columns if they don't exist (SQLite simple migration)
+    conn = db.engine.connect()
+    # check pragma table_info
+    res = conn.execute("PRAGMA table_info('order')").fetchall()
+    cols = [r[1] for r in res]
+    if 'purchase_type' not in cols:
+        try:
+            conn.execute("ALTER TABLE 'order' ADD COLUMN purchase_type TEXT DEFAULT 'Online'")
+        except Exception:
+            pass
+    if 'payment_mode' not in cols:
+        try:
+            conn.execute("ALTER TABLE 'order' ADD COLUMN payment_mode TEXT DEFAULT 'Pending'")
+        except Exception:
+            pass
+    conn.close()
+
 # --- DB seed (if empty) ----------------------------------------------------
 def seed_data():
     if Customer.query.first():
@@ -86,9 +109,9 @@ def seed_data():
     db.session.bulk_save_objects(customers)
 
     orders = [
-        Order(order_id='O001', date=today - datetime.timedelta(days=60), customer_id='C001', saree_type='Soft Silk', amount=2500, payment_status='Paid', delivery_status='Delivered'),
-        Order(order_id='O002', date=today - datetime.timedelta(days=45), customer_id='C003', saree_type='Chiffon Floral', amount=1800, payment_status='Paid', delivery_status='Delivered'),
-        Order(order_id='O003', date=today - datetime.timedelta(days=30), customer_id='C002', saree_type='Banarasi', amount=3200, payment_status='Paid', delivery_status='Delivered'),
+        Order(order_id='O001', date=today - datetime.timedelta(days=60), customer_id='C001', saree_type='Soft Silk', amount=2500, payment_status='Paid', delivery_status='Delivered', purchase_type='Online', payment_mode='UPI'),
+        Order(order_id='O002', date=today - datetime.timedelta(days=45), customer_id='C003', saree_type='Chiffon Floral', amount=1800, payment_status='Paid', delivery_status='Delivered', purchase_type='Offline', payment_mode='Cash'),
+        Order(order_id='O003', date=today - datetime.timedelta(days=30), customer_id='C002', saree_type='Banarasi', amount=3200, payment_status='Pending', delivery_status='Pending', purchase_type='Online', payment_mode='Pending'),
     ]
     db.session.bulk_save_objects(orders)
 
@@ -107,6 +130,10 @@ BASE_TEMPLATE = """<!doctype html>
     <title>{{ business }} - Saree CRM</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      .search-box { max-width:420px; }
+      .clickable { cursor:pointer; }
+    </style>
   </head>
   <body class="bg-light">
   <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
@@ -117,6 +144,7 @@ BASE_TEMPLATE = """<!doctype html>
           <li class="nav-item"><a class="nav-link" href="/customers">Customers</a></li>
           <li class="nav-item"><a class="nav-link" href="/orders">Orders</a></li>
           <li class="nav-item"><a class="nav-link" href="/followups">Follow-ups</a></li>
+          <li class="nav-item"><a class="nav-link" href="/payments">Payments</a></li>
           <li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li>
         </ul>
         <div class="d-flex">
@@ -135,7 +163,6 @@ BASE_TEMPLATE = """<!doctype html>
 
 # -- Helpers -----------------------------------------------------------------
 def next_customer_id():
-    # generate Cxxx
     c = Customer.query.order_by(Customer.id.desc()).first()
     if not c:
         return 'C001'
@@ -161,12 +188,12 @@ def next_fu_id():
 def home():
     return redirect(url_for('dashboard'))
 
-# Customers CRUD
+# Customers CRUD with search
 @app.route('/customers', methods=['GET','POST'])
 def customers():
+    q = request.args.get('q','').strip()
     if request.method == 'POST':
         cid = request.form.get('customer_id') or next_customer_id()
-        # if editing existing
         existing = Customer.query.filter_by(customer_id=cid).first()
         if existing and request.form.get('_method') == 'PUT':
             existing.name = request.form['name']
@@ -186,11 +213,15 @@ def customers():
             db.session.add(c)
             db.session.commit()
             return redirect(url_for('customers'))
-    rows = Customer.query.order_by(Customer.id.desc()).all()
+    if q:
+        rows = Customer.query.filter(db.or_(Customer.name.ilike(f'%{q}%'), Customer.insta.ilike(f'%{q}%'), Customer.phone.ilike(f'%{q}%'), Customer.city.ilike(f'%{q}%'))).order_by(Customer.id.desc()).all()
+    else:
+        rows = Customer.query.order_by(Customer.id.desc()).all()
     body = render_template_string('''
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h3>Customers</h3>
-        <div>
+        <div class="d-flex">
+          <form class="me-2" method="get"><input class="form-control search-box" name="q" placeholder="Search customers..." value="{{ request.args.get('q','') }}"/></form>
           <a class="btn btn-sm btn-secondary" href="/export/customers">Export CSV</a>
         </div>
       </div>
@@ -259,9 +290,12 @@ def edit_customer(cid):
     ''', c=c)
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
-# Orders CRUD
+# Orders CRUD with search, sorting, monthly filter
 @app.route('/orders', methods=['GET','POST'])
 def orders():
+    q = request.args.get('q','').strip()
+    sort = request.args.get('sort','pending')  # default sort pending first
+    month = request.args.get('month','')  # format YYYY-MM
     if request.method == 'POST':
         oid = request.form.get('order_id') or next_order_id()
         existing = Order.query.filter_by(order_id=oid).first()
@@ -275,6 +309,8 @@ def orders():
             existing.payment_status = request.form.get('payment_status')
             existing.delivery_status = request.form.get('delivery_status')
             existing.remarks = request.form.get('remarks')
+            existing.purchase_type = request.form.get('purchase_type')
+            existing.payment_mode = request.form.get('payment_mode')
             db.session.commit()
             return redirect(url_for('orders'))
         if existing and request.form.get('_method') == 'DELETE':
@@ -282,15 +318,58 @@ def orders():
             db.session.commit()
             return redirect(url_for('orders'))
         if not existing:
-            o = Order(order_id=oid, date=date_obj, customer_id=request.form.get('customer_id'), saree_type=request.form.get('saree_type'), amount=int(request.form.get('amount') or 0), payment_status=request.form.get('payment_status'), delivery_status=request.form.get('delivery_status'), remarks=request.form.get('remarks'))
+            o = Order(order_id=oid, date=date_obj, customer_id=request.form.get('customer_id'), saree_type=request.form.get('saree_type'), amount=int(request.form.get('amount') or 0), payment_status=request.form.get('payment_status'), delivery_status=request.form.get('delivery_status'), remarks=request.form.get('remarks'), purchase_type=request.form.get('purchase_type') or 'Online', payment_mode=request.form.get('payment_mode') or 'Pending')
             db.session.add(o)
             db.session.commit()
             return redirect(url_for('orders'))
-    rows = Order.query.order_by(Order.date.desc()).all()
+    # base query
+    qbase = Order.query
+    if q:
+        qbase = qbase.filter(db.or_(Order.order_id.ilike(f'%{q}%'), Order.saree_type.ilike(f'%{q}%'), Order.customer_id.ilike(f'%{q}%')))
+    if month:
+        try:
+            y,m = month.split('-')
+            qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
+        except Exception:
+            pass
+    # sorting
+    if sort=='pending':
+        rows = qbase.order_by(db.case([(Order.payment_status=='Pending',0)], else_=1), Order.date.desc()).all()
+    elif sort=='date':
+        rows = qbase.order_by(Order.date.desc()).all()
+    elif sort=='amount':
+        rows = qbase.order_by(Order.amount.desc()).all()
+    else:
+        rows = qbase.order_by(Order.date.desc()).all()
+
+    # eager load customer names into a dict to display
+    custs = {c.customer_id: c.name for c in Customer.query.all()}
+
     customers = Customer.query.all()
+    months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
+    months = [r.m for r in months]
+
     body = render_template_string('''
-      <div class="d-flex justify-content-between align-items-center mb-3"><h3>Orders</h3>
-        <div><a class="btn btn-sm btn-secondary" href="/export/orders">Export CSV</a></div></div>
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3>Orders</h3>
+        <div class="d-flex">
+          <form class="me-2" method="get">
+            <input class="form-control search-box" name="q" placeholder="Search orders..." value="{{ request.args.get('q','') }}"/>
+          </form>
+          <select class="form-select me-2" onchange="location=this.value">
+            <option value="{{ url_for('orders', q=request.args.get('q',''), sort='pending', month=request.args.get('month','')) }}" {% if request.args.get('sort','pending')=='pending' %}selected{% endif %}>Pending First</option>
+            <option value="{{ url_for('orders', q=request.args.get('q',''), sort='date', month=request.args.get('month','')) }}" {% if request.args.get('sort')=='date' %}selected{% endif %}>Sort by Date</option>
+            <option value="{{ url_for('orders', q=request.args.get('q',''), sort='amount', month=request.args.get('month','')) }}" {% if request.args.get('sort')=='amount' %}selected{% endif %}>Sort by Amount</option>
+          </select>
+          <select class="form-select me-2" onchange="location=this.value">
+            <option value="{{ url_for('orders', q=request.args.get('q',''), sort=request.args.get('sort','pending'), month='') }}">All Months</option>
+            {% for m in months %}
+              <option value="{{ url_for('orders', q=request.args.get('q',''), sort=request.args.get('sort','pending'), month=m) }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+          <a class="btn btn-sm btn-secondary" href="/export/orders">Export CSV</a>
+        </div>
+      </div>
       <div class="card p-3 mb-3">
         <form method="post">
           <div class="row g-2">
@@ -304,27 +383,35 @@ def orders():
                 {% endfor %}
               </select>
             </div>
-            <div class="col-md-3"><input class="form-control" name="saree_type" placeholder="Saree Type"/></div>
-            <div class="col-md-2"><input class="form-control" name="amount" placeholder="Amount"/></div>
+            <div class="col-md-2"><input class="form-control" name="saree_type" placeholder="Saree Type"/></div>
+            <div class="col-md-1"><input class="form-control" name="amount" placeholder="Amt"/></div>
+            <div class="col-md-2">
+              <select name="purchase_type" class="form-select"><option>Online</option><option>Offline</option></select>
+            </div>
           </div>
           <div class="row g-2 mt-2">
-            <div class="col-md-3">
-              <select name="payment_status" class="form-select"><option>Paid</option><option>Pending</option></select>
-            </div>
-            <div class="col-md-3">
-              <select name="delivery_status" class="form-select"><option>Pending</option><option>Shipped</option><option>Delivered</option></select>
-            </div>
-            <div class="col-md-4"><input class="form-control" name="remarks" placeholder="Remarks"/></div>
+            <div class="col-md-2"><select name="payment_status" class="form-select"><option>Paid</option><option>Pending</option></select></div>
+            <div class="col-md-2"><select name="payment_mode" class="form-select"><option>UPI</option><option>Cash</option><option>Pending</option></select></div>
+            <div class="col-md-3"><select name="delivery_status" class="form-select"><option>Pending</option><option>Shipped</option><option>Delivered</option></select></div>
+            <div class="col-md-3"><input class="form-control" name="remarks" placeholder="Remarks"/></div>
             <div class="col-md-2"><button class="btn btn-primary w-100">Add Order</button></div>
           </div>
         </form>
       </div>
       <table class="table table-hover">
-        <thead><tr><th>Order ID</th><th>Date</th><th>Customer</th><th>Saree</th><th>Amt</th><th>Payment</th><th>Delivery</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Order ID</th><th>Date</th><th>Customer</th><th>Saree</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th><th>Delivery</th><th>Actions</th></tr></thead>
         <tbody>
           {% for r in rows %}
             <tr>
-              <td>{{ r.order_id }}</td><td>{{ r.date }}</td><td>{{ r.customer_id }}</td><td>{{ r.saree_type }}</td><td>{{ r.amount }}</td><td>{{ r.payment_status }}</td><td>{{ r.delivery_status }}</td>
+              <td>{{ r.order_id }}</td>
+              <td>{{ r.date }}</td>
+              <td>{{ r.customer_id }} - {{ custs.get(r.customer_id,'-') }}</td>
+              <td>{{ r.saree_type }}</td>
+              <td>{{ r.amount }}</td>
+              <td>{{ r.purchase_type }}</td>
+              <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
+              <td>{{ r.payment_mode }}</td>
+              <td>{{ r.delivery_status }}</td>
               <td>
                 <a class="btn btn-sm btn-outline-primary" href="/orders/edit/{{ r.order_id }}">Edit</a>
                 <form method="post" action="/orders" style="display:inline-block; margin-left:6px;">
@@ -337,7 +424,7 @@ def orders():
           {% endfor %}
         </tbody>
       </table>
-    ''', rows=rows, customers=customers)
+    ''', rows=rows, customers=customers, custs=custs, months=months)
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 @app.route('/orders/edit/<oid>', methods=['GET'])
@@ -359,21 +446,24 @@ def edit_order(oid):
             </select>
           </div>
           <div class="col-md-3"><input class="form-control" name="saree_type" value="{{ o.saree_type }}"/></div>
-          <div class="col-md-2"><input class="form-control" name="amount" value="{{ o.amount }}"/></div>
-          <div class="col-md-2"><select name="payment_status" class="form-select"><option {% if o.payment_status=='Paid' %}selected{% endif %}>Paid</option><option {% if o.payment_status=='Pending' %}selected{% endif %}>Pending</option></select></div>
+          <div class="col-md-1"><input class="form-control" name="amount" value="{{ o.amount }}"/></div>
+          <div class="col-md-2"><select name="purchase_type" class="form-select"><option {% if o.purchase_type=='Online' %}selected{% endif %}>Online</option><option {% if o.purchase_type=='Offline' %}selected{% endif %}>Offline</option></select></div>
+          <div class="col-md-1"><select name="payment_mode" class="form-select"><option {% if o.payment_mode=='UPI' %}selected{% endif %}>UPI</option><option {% if o.payment_mode=='Cash' %}selected{% endif %}>Cash</option><option {% if o.payment_mode=='Pending' %}selected{% endif %}>Pending</option></select></div>
         </div>
         <div class="row g-2 mt-2">
+          <div class="col-md-2"><select name="payment_status" class="form-select"><option {% if o.payment_status=='Paid' %}selected{% endif %}>Paid</option><option {% if o.payment_status=='Pending' %}selected{% endif %}>Pending</option></select></div>
           <div class="col-md-3"><select name="delivery_status" class="form-select"><option {% if o.delivery_status=='Pending' %}selected{% endif %}>Pending</option><option {% if o.delivery_status=='Shipped' %}selected{% endif %}>Shipped</option><option {% if o.delivery_status=='Delivered' %}selected{% endif %}>Delivered</option></select></div>
-          <div class="col-md-6"><input class="form-control" name="remarks" value="{{ o.remarks }}"/></div>
-          <div class="col-md-3"><button class="btn btn-primary">Save</button> <a class="btn btn-secondary" href="/orders">Cancel</a></div>
+          <div class="col-md-5"><input class="form-control" name="remarks" value="{{ o.remarks }}"/></div>
+          <div class="col-md-2"><button class="btn btn-primary">Save</button> <a class="btn btn-secondary" href="/orders">Cancel</a></div>
         </div>
       </form>
     ''', o=o, customers=customers)
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
-# Follow-ups CRUD
+# Follow-ups CRUD with search
 @app.route('/followups', methods=['GET','POST'])
 def followups():
+    q = request.args.get('q','').strip()
     if request.method == 'POST':
         fid = request.form.get('fu_id') or next_fu_id()
         existing = FollowUp.query.filter_by(fu_id=fid).first()
@@ -399,10 +489,16 @@ def followups():
             db.session.add(f)
             db.session.commit()
             return redirect(url_for('followups'))
-    rows = FollowUp.query.order_by(FollowUp.next_date.asc().nulls_last()).all()
+    if q:
+        rows = FollowUp.query.filter(db.or_(FollowUp.customer_name.ilike(f'%{q}%'), FollowUp.insta.ilike(f'%{q}%'), FollowUp.topic.ilike(f'%{q}%'))).order_by(FollowUp.next_date.asc().nulls_last()).all()
+    else:
+        rows = FollowUp.query.order_by(FollowUp.next_date.asc().nulls_last()).all()
     body = render_template_string('''
       <div class="d-flex justify-content-between align-items-center mb-3"><h3>Follow-ups</h3>
-        <div><a class="btn btn-sm btn-secondary" href="/export/followups">Export CSV</a></div></div>
+        <div class="d-flex">
+          <form class="me-2" method="get"><input class="form-control search-box" name="q" placeholder="Search follow-ups..." value="{{ request.args.get('q','') }}"/></form>
+          <a class="btn btn-sm btn-secondary" href="/export/followups">Export CSV</a>
+        </div></div>
       <div class="card p-3 mb-3">
         <form method="post">
           <div class="row g-2">
@@ -465,6 +561,127 @@ def edit_followup(fid):
     ''', f=f)
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
+# Payments - aggregated from Orders (no manual payments table)
+@app.route('/payments')
+def payments():
+    # filters
+    month = request.args.get('month','')  # YYYY-MM
+    status = request.args.get('status','')  # Paid/Pending
+    mode = request.args.get('mode','')  # UPI/Cash/Pending
+
+    qbase = Order.query
+    if month:
+        try:
+            y,m = month.split('-')
+            qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
+        except Exception:
+            pass
+    if status:
+        qbase = qbase.filter(Order.payment_status==status)
+    if mode:
+        qbase = qbase.filter(Order.payment_mode==mode)
+
+    rows = qbase.order_by(Order.date.desc()).all()
+
+    # Summaries
+    total_revenue = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid')
+    if month:
+        total_revenue = total_revenue.filter(func.strftime('%Y-%m', Order.date)==month)
+    total_revenue = total_revenue.scalar() or 0
+
+    pending_amount = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending')
+    if month:
+        pending_amount = pending_amount.filter(func.strftime('%Y-%m', Order.date)==month)
+    pending_amount = pending_amount.scalar() or 0
+
+    # Mode split
+    mode_q = db.session.query(Order.payment_mode, func.count(Order.id)).group_by(Order.payment_mode).all()
+    mode_split = [{'mode':r[0] or 'Pending','count':r[1]} for r in mode_q]
+
+    # Monthly cashflow (sum by month for Paid orders)
+    cash_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.sum(case:=func.sum(Order.amount)).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
+    # note: sqlite + sqlalchemy case aliasing; easier to compute in python
+    monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.sum(Order.amount).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
+    monthly = [{'month':r.m,'amount':r.sum} for r in monthly_q]
+
+    months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
+    months = [r.m for r in months]
+
+    body = render_template_string('''
+      <h3>Payments</h3>
+      <div class="d-flex mb-3">
+        <form class="me-2" method="get">
+          <select name="month" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Months</option>
+            {% for m in months %}
+              <option value="{{ m }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        <form class="me-2">
+          <select name="status" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Status</option>
+            <option value="Paid" {% if request.args.get('status','')=='Paid' %}selected{% endif %}>Paid</option>
+            <option value="Pending" {% if request.args.get('status','')=='Pending' %}selected{% endif %}>Pending</option>
+          </select>
+        </form>
+        <form>
+          <select name="mode" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Modes</option>
+            <option value="UPI" {% if request.args.get('mode','')=='UPI' %}selected{% endif %}>UPI</option>
+            <option value="Cash" {% if request.args.get('mode','')=='Cash' %}selected{% endif %}>Cash</option>
+            <option value="Pending" {% if request.args.get('mode','')=='Pending' %}selected{% endif %}>Pending</option>
+          </select>
+        </form>
+        <a class="btn btn-sm btn-secondary ms-auto" href="/export/payments">Export CSV</a>
+      </div>
+
+      <div class="row mb-3">
+        <div class="col-md-3"><div class="card p-2"><small>Monthly Revenue (Paid)</small><h4>₹{{ total_revenue }}</h4></div></div>
+        <div class="col-md-3"><div class="card p-2"><small>Pending Amount</small><h4>₹{{ pending_amount }}</h4></div></div>
+        <div class="col-md-3"><div class="card p-2"><small>Payment Mode Split</small><h4>{{ mode_split | length }} modes</h4></div></div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6"><canvas id="cashflow"></canvas></div>
+        <div class="col-md-6"><canvas id="modes"></canvas></div>
+      </div>
+
+      <hr/>
+      <table class="table table-hover mt-3">
+        <thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.date }}</td>
+              <td>{{ r.order_id }}</td>
+              <td>{{ r.customer_id }} - {{ (Customer.query.filter_by(customer_id=r.customer_id).first().name) if Customer.query.filter_by(customer_id=r.customer_id).first() else '-' }}</td>
+              <td>{{ r.amount }}</td>
+              <td>{{ r.purchase_type }}</td>
+              <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
+              <td>{{ r.payment_mode }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <script>
+        const monthly = {{ monthly | tojson }};
+        const modes = {{ mode_split | tojson }};
+        new Chart(document.getElementById('cashflow'), { type:'bar', data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Paid (₹)', data: monthly.map(x=>x.amount) }] }, options:{responsive:true} });
+        new Chart(document.getElementById('modes'), { type:'pie', data:{ labels: modes.map(x=>x.mode+' ('+x.count+')'), datasets:[{ data: modes.map(x=>x.count) }] }, options:{responsive:true} });
+      </script>
+    ''', rows=rows, total_revenue=total_revenue, pending_amount=pending_amount, mode_split=mode_split, monthly=monthly, months=months)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
+
+# Export payments
+@app.route('/export/payments')
+def export_payments():
+    rows = Order.query.all()
+    cols = ['order_id','date','customer_id','saree_type','amount','purchase_type','payment_status','payment_mode']
+    path = rows_to_csv(rows, cols, 'payments.csv')
+    return send_file(path, as_attachment=True, download_name='payments.csv')
+
 # Dashboard
 @app.route('/dashboard')
 def dashboard():
@@ -526,7 +743,7 @@ def dashboard():
           options: { responsive:true }
         });
 
-        // Saree pie with percent labels (compute percentages in JS)
+        // Saree pie with percent labels
         const sareeLabels = saree.map(x=>x.type);
         const sareeData = saree.map(x=>x.count);
         const total = sareeData.reduce((a,b)=>a+b,0);
@@ -549,15 +766,19 @@ def dashboard():
 
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
-# Export CSV endpoints
+# Export CSVs (helpers)
+
 def rows_to_csv(rows, cols, filename):
-    # write to temp file and return path
     tmp = f"/tmp/{filename}"
     with open(tmp, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(cols)
         for r in rows:
-            writer.writerow([getattr(r, c) if hasattr(r, c) else '' for c in cols])
+            row = []
+            for c in cols:
+                val = getattr(r, c) if hasattr(r, c) else ''
+                row.append(val)
+            writer.writerow(row)
     return tmp
 
 @app.route('/export/customers')
@@ -570,7 +791,7 @@ def export_customers():
 @app.route('/export/orders')
 def export_orders():
     rows = Order.query.all()
-    cols = ['order_id','date','customer_id','saree_type','amount','payment_status','delivery_status','remarks']
+    cols = ['order_id','date','customer_id','saree_type','amount','purchase_type','payment_status','payment_mode','delivery_status','remarks']
     path = rows_to_csv(rows, cols, 'orders.csv')
     return send_file(path, as_attachment=True, download_name='orders.csv')
 
@@ -583,8 +804,7 @@ def export_followups():
 
 @app.route('/export/all')
 def export_all():
-    # returns a small HTML page linking to the three CSV exports
-    return redirect(url_for('export_customers'))
+    return redirect(url_for('export_orders'))
 
 # API endpoints (JSON)
 @app.route('/api/customers')
@@ -603,6 +823,7 @@ def api_followups():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        ensure_columns()
         seed_data()
     print(f'Starting {BUSINESS_NAME} Saree CRM app... DB file: {DB_PATH}')
     app.run(host='0.0.0.0', port=5000, debug=False)
