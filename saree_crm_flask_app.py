@@ -332,16 +332,20 @@ def orders():
             qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
         except Exception:
             pass
-    # sorting
-    if sort=='pending':
-        rows = qbase.order_by(db.case([(Order.payment_status=='Pending',0)], else_=1), Order.date.desc()).all()
-    elif sort=='date':
+    # sorting    # sorting
+    # Default: pending payments first
+    try:
+        if sort == 'pending':
+            rows = qbase.order_by(db.case((Order.payment_status=='Pending', 0), else_=1), Order.date.desc()).all()
+        elif sort == 'date':
+            rows = qbase.order_by(Order.date.desc()).all()
+        elif sort == 'amount':
+            rows = qbase.order_by(Order.amount.desc()).all()
+        else:
+            rows = qbase.order_by(Order.date.desc()).all()
+    except Exception:
+        # fallback to a safe ordering in case of unexpected DB/schema issues
         rows = qbase.order_by(Order.date.desc()).all()
-    elif sort=='amount':
-        rows = qbase.order_by(Order.amount.desc()).all()
-    else:
-        rows = qbase.order_by(Order.date.desc()).all()
-
     # eager load customer names into a dict to display
     custs = {c.customer_id: c.name for c in Customer.query.all()}
 
@@ -562,52 +566,55 @@ def edit_followup(fid):
     return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 # Payments - aggregated from Orders (no manual payments table)
+
 @app.route('/payments')
 def payments():
-    # filters
-    month = request.args.get('month','')  # YYYY-MM
-    status = request.args.get('status','')  # Paid/Pending
-    mode = request.args.get('mode','')  # UPI/Cash/Pending
+    try:
+        # filters
+        month = request.args.get('month','')  # YYYY-MM
+        status = request.args.get('status','')  # Paid/Pending
+        mode = request.args.get('mode','')  # UPI/Cash/Pending
 
-    qbase = Order.query
-    if month:
-        try:
-            y,m = month.split('-')
-            qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
-        except Exception:
-            pass
-    if status:
-        qbase = qbase.filter(Order.payment_status==status)
-    if mode:
-        qbase = qbase.filter(Order.payment_mode==mode)
+        qbase = Order.query
+        if month:
+            try:
+                y,m = month.split('-')
+                qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
+            except Exception:
+                pass
+        if status:
+            qbase = qbase.filter(Order.payment_status==status)
+        if mode:
+            qbase = qbase.filter(Order.payment_mode==mode)
 
-    rows = qbase.order_by(Order.date.desc()).all()
+        rows = qbase.order_by(Order.date.desc()).all()
 
-    # Summaries
-    total_revenue = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid')
-    if month:
-        total_revenue = total_revenue.filter(func.strftime('%Y-%m', Order.date)==month)
-    total_revenue = total_revenue.scalar() or 0
+        # prepare data structures for template (avoid ORM calls inside template)
+        custs = {c.customer_id: c.name for c in Customer.query.all()}
 
-    pending_amount = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending')
-    if month:
-        pending_amount = pending_amount.filter(func.strftime('%Y-%m', Order.date)==month)
-    pending_amount = pending_amount.scalar() or 0
+        # Summaries
+        total_revenue_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid')
+        if month:
+            total_revenue_q = total_revenue_q.filter(func.strftime('%Y-%m', Order.date)==month)
+        total_revenue = int(total_revenue_q.scalar() or 0)
 
-    # Mode split
-    mode_q = db.session.query(Order.payment_mode, func.count(Order.id)).group_by(Order.payment_mode).all()
-    mode_split = [{'mode':r[0] or 'Pending','count':r[1]} for r in mode_q]
+        pending_amount_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending')
+        if month:
+            pending_amount_q = pending_amount_q.filter(func.strftime('%Y-%m', Order.date)==month)
+        pending_amount = int(pending_amount_q.scalar() or 0)
 
-    # Monthly cashflow (sum by month for Paid orders)
-    cash_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.sum(case:=func.sum(Order.amount)).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
-    # note: sqlite + sqlalchemy case aliasing; easier to compute in python
-    monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.sum(Order.amount).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
-    monthly = [{'month':r.m,'amount':r.sum} for r in monthly_q]
+        # Mode split
+        mode_q = db.session.query(Order.payment_mode, func.count(Order.id)).group_by(Order.payment_mode).all()
+        mode_split = [{'mode': (r[0] or 'Pending'),'count': r[1]} for r in mode_q]
 
-    months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
-    months = [r.m for r in months]
+        # Monthly cashflow (Paid orders)
+        monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.coalesce(func.sum(Order.amount),0).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
+        monthly = [{'month':r.m,'amount':int(r.sum)} for r in monthly_q]
 
-    body = render_template_string('''
+        months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
+        months = [r.m for r in months]
+
+        body = render_template_string('''
       <h3>Payments</h3>
       <div class="d-flex mb-3">
         <form class="me-2" method="get">
@@ -639,7 +646,7 @@ def payments():
       <div class="row mb-3">
         <div class="col-md-3"><div class="card p-2"><small>Monthly Revenue (Paid)</small><h4>₹{{ total_revenue }}</h4></div></div>
         <div class="col-md-3"><div class="card p-2"><small>Pending Amount</small><h4>₹{{ pending_amount }}</h4></div></div>
-        <div class="col-md-3"><div class="card p-2"><small>Payment Mode Split</small><h4>{{ mode_split | length }} modes</h4></div></div>
+        <div class="col-md-3"><div class="card p-2"><small>Payment Mode Split</small><h4>{{ mode_split|length }} modes</h4></div></div>
       </div>
 
       <div class="row">
@@ -655,7 +662,7 @@ def payments():
             <tr>
               <td>{{ r.date }}</td>
               <td>{{ r.order_id }}</td>
-              <td>{{ r.customer_id }} - {{ (Customer.query.filter_by(customer_id=r.customer_id).first().name) if Customer.query.filter_by(customer_id=r.customer_id).first() else '-' }}</td>
+              <td>{{ r.customer_id }} - {{ custs.get(r.customer_id, '-') }}</td>
               <td>{{ r.amount }}</td>
               <td>{{ r.purchase_type }}</td>
               <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
@@ -671,11 +678,15 @@ def payments():
         new Chart(document.getElementById('cashflow'), { type:'bar', data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Paid (₹)', data: monthly.map(x=>x.amount) }] }, options:{responsive:true} });
         new Chart(document.getElementById('modes'), { type:'pie', data:{ labels: modes.map(x=>x.mode+' ('+x.count+')'), datasets:[{ data: modes.map(x=>x.count) }] }, options:{responsive:true} });
       </script>
-    ''', rows=rows, total_revenue=total_revenue, pending_amount=pending_amount, mode_split=mode_split, monthly=monthly, months=months)
-    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
+    ''', rows=rows, total_revenue=total_revenue, pending_amount=pending_amount, mode_split=mode_split, monthly=monthly, months=months, custs=custs)
+        return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
-# Export payments
-@app.route('/export/payments')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        body = '<div class="alert alert-danger">Error generating Payments page. Check server logs.</div>'
+        return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
+
 def export_payments():
     rows = Order.query.all()
     cols = ['order_id','date','customer_id','saree_type','amount','purchase_type','payment_status','payment_mode']
@@ -827,3 +838,4 @@ if __name__ == '__main__':
         seed_data()
     print(f'Starting {BUSINESS_NAME} Saree CRM app... DB file: {DB_PATH}')
     app.run(host='0.0.0.0', port=5000, debug=False)
+
