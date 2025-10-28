@@ -567,6 +567,7 @@ def edit_followup(fid):
 
 # Payments - aggregated from Orders (no manual payments table)
 
+
 @app.route('/payments')
 def payments():
     try:
@@ -574,126 +575,203 @@ def payments():
         month = request.args.get('month','')  # YYYY-MM
         status = request.args.get('status','')  # Paid/Pending
         mode = request.args.get('mode','')  # UPI/Cash/Pending
+        sort = request.args.get('sort','date')  # date / amount / status
+        page = int(request.args.get('page','1') or 1)
+        page = max(1,page)
+        page_size = 50
 
         qbase = Order.query
         if month:
-            try:
-                y,m = month.split('-')
-                qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
-            except Exception:
-                pass
+            qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==month)
         if status:
             qbase = qbase.filter(Order.payment_status==status)
         if mode:
             qbase = qbase.filter(Order.payment_mode==mode)
 
-        rows = qbase.order_by(Order.date.desc()).all()
+        # ordering
+        if sort == 'amount':
+            rows = qbase.order_by(Order.amount.desc()).all()
+        elif sort == 'status':
+            rows = qbase.order_by(Order.payment_status.asc(), Order.date.desc()).all()
+        else:
+            rows = qbase.order_by(db.case((Order.payment_status=='Pending', 0), else_=1), Order.date.desc()).all()
 
-        # prepare data structures for template (avoid ORM calls inside template)
-        custs = {c.customer_id: c.name for c in Customer.query.all()}
+        total = len(rows)
+        pages = (total + page_size - 1)//page_size
+        rows_page = rows[(page-1)*page_size : page*page_size]
 
-        # Summaries
-        total_revenue_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid')
-        if month:
-            total_revenue_q = total_revenue_q.filter(func.strftime('%Y-%m', Order.date)==month)
-        total_revenue = int(total_revenue_q.scalar() or 0)
+        # customer map
+        custs = {c.customer_id: c.name for c in Customer.query.order_by(Customer.id.desc()).all()}
 
-        pending_amount_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending')
-        if month:
-            pending_amount_q = pending_amount_q.filter(func.strftime('%Y-%m', Order.date)==month)
-        pending_amount = int(pending_amount_q.scalar() or 0)
+        # Payment mode breakdown (for donut)
+        mode_q = db.session.query(Order.payment_mode, func.coalesce(func.sum(Order.amount),0).label('sum')).group_by(Order.payment_mode).all()
+        mode_map = { (r[0] if r[0] else 'Pending'): int(r[1]) for r in mode_q }
+        modes = ['UPI','Cash','Pending']
+        mode_values = [ mode_map.get(m,0) for m in modes ]
+        total_mode_amount = sum(mode_values)
 
-        # Mode split
-        mode_q = db.session.query(Order.payment_mode, func.count(Order.id)).group_by(Order.payment_mode).all()
-        mode_split = [{'mode': (r[0] or 'Pending'),'count': r[1]} for r in mode_q]
-
-        # Monthly cashflow (Paid orders)
-        monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.coalesce(func.sum(Order.amount),0).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
+        # Graph data depends on selected status (default Paid)
+        graph_status = status if status else 'Paid'
+        monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.coalesce(func.sum(Order.amount),0).label('sum')).filter(Order.payment_status==graph_status).group_by('m').order_by('m').all()
         monthly = [{'month':r.m,'amount':int(r.sum)} for r in monthly_q]
-
         months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
         months = [r.m for r in months]
 
+        # totals for cards
+        total_revenue = int(db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid').scalar() or 0)
+        pending_amount = int(db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending').scalar() or 0)
+
         body = render_template_string('''
-      <h3>Payments</h3>
-      <div class="d-flex mb-3">
-        <form class="me-2" method="get">
-          <select name="month" class="form-select me-2" onchange="this.form.submit()">
-            <option value="">All Months</option>
-            {% for m in months %}
-              <option value="{{ m }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
-            {% endfor %}
-          </select>
-        </form>
-        <form class="me-2">
-          <select name="status" class="form-select me-2" onchange="this.form.submit()">
-            <option value="">All Status</option>
-            <option value="Paid" {% if request.args.get('status','')=='Paid' %}selected{% endif %}>Paid</option>
-            <option value="Pending" {% if request.args.get('status','')=='Pending' %}selected{% endif %}>Pending</option>
-          </select>
-        </form>
-        <form>
-          <select name="mode" class="form-select me-2" onchange="this.form.submit()">
-            <option value="">All Modes</option>
-            <option value="UPI" {% if request.args.get('mode','')=='UPI' %}selected{% endif %}>UPI</option>
-            <option value="Cash" {% if request.args.get('mode','')=='Cash' %}selected{% endif %}>Cash</option>
-            <option value="Pending" {% if request.args.get('mode','')=='Pending' %}selected{% endif %}>Pending</option>
-          </select>
-        </form>
-        <a class="btn btn-sm btn-secondary ms-auto" href="/export/payments">Export CSV</a>
+    <h3>Payments</h3>
+
+    <div class="row mb-3">
+      <div class="col-md-4">
+        <div class="card p-2 text-center">
+          <small>Payment Mode (Donut)</small>
+          <canvas id="modeDonut" style="max-height:240px"></canvas>
+          <div class="mt-2">
+            <strong>Total: ₹{{ total_mode_amount }}</strong>
+          </div>
+          <div class="mt-2">
+            <ul class="list-unstyled small text-start">
+              {% for m in modes %}
+                <li><span style="display:inline-block;width:12px;height:12px;background:var(--chart-color-{{ loop.index0 }});margin-right:6px;"></span>{{ m }} — ₹{{ mode_values[loop.index0] }} ({{ ('%0.1f' % ((mode_values[loop.index0]/(total_mode_amount or 1))*100)) }}%)</li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
       </div>
 
-      <div class="row mb-3">
-        <div class="col-md-3"><div class="card p-2"><small>Monthly Revenue (Paid)</small><h4>₹{{ total_revenue }}</h4></div></div>
-        <div class="col-md-3"><div class="card p-2"><small>Pending Amount</small><h4>₹{{ pending_amount }}</h4></div></div>
-        <div class="col-md-3"><div class="card p-2"><small>Payment Mode Split</small><h4>{{ mode_split|length }} modes</h4></div></div>
+      <div class="col-md-8">
+        <div class="d-flex mb-2">
+          <form class="me-2" method="get">
+            <select name="month" class="form-select me-2" onchange="this.form.submit()">
+              <option value="">All Months</option>
+              {% for m in months %}
+                <option value="{{ m }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </select>
+
+            <select name="status" class="form-select me-2" onchange="this.form.submit()">
+              <option value="">Show (default Paid)</option>
+              <option value="Paid" {% if request.args.get('status','')=='Paid' %}selected{% endif %}>Paid</option>
+              <option value="Pending" {% if request.args.get('status','')=='Pending' %}selected{% endif %}>Pending</option>
+            </select>
+
+            <select name="sort" class="form-select me-2" onchange="this.form.submit()">
+              <option value="date" {% if request.args.get('sort','')=='date' %}selected{% endif %}>Sort: Date</option>
+              <option value="amount" {% if request.args.get('sort','')=='amount' %}selected{% endif %}>Sort: Amount (desc)</option>
+              <option value="status" {% if request.args.get('sort','')=='status' %}selected{% endif %}>Sort: Payment Status</option>
+            </select>
+
+            <select name="mode" class="form-select me-2" onchange="this.form.submit()">
+              <option value="">All Modes</option>
+              <option value="UPI" {% if request.args.get('mode','')=='UPI' %}selected{% endif %}>UPI</option>
+              <option value="Cash" {% if request.args.get('mode','')=='Cash' %}selected{% endif %}>Cash</option>
+              <option value="Pending" {% if request.args.get('mode','')=='Pending' %}selected{% endif %}>Pending</option>
+            </select>
+          </form>
+
+          <a class="btn btn-sm btn-secondary ms-auto" href="/export/payments">Export CSV</a>
+        </div>
+
+        <div class="card p-2 mb-2">
+          <small>Monthly Totals ({{ graph_status }})</small>
+          <canvas id="cashflow" style="max-height:240px"></canvas>
+        </div>
+
+        <div class="d-flex">
+          <div class="me-3"><small>Monthly Revenue (Paid)</small><div><strong>₹{{ total_revenue }}</strong></div></div>
+          <div><small>Pending Amount</small><div><strong>₹{{ pending_amount }}</strong></div></div>
+        </div>
       </div>
+    </div>
 
-      <div class="row">
-        <div class="col-md-6"><canvas id="cashflow"></canvas></div>
-        <div class="col-md-6"><canvas id="modes"></canvas></div>
-      </div>
+    <hr/>
 
-      <hr/>
-      <table class="table table-hover mt-3">
-        <thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th></tr></thead>
-        <tbody>
-          {% for r in rows %}
-            <tr>
-              <td>{{ r.date }}</td>
-              <td>{{ r.order_id }}</td>
-              <td>{{ r.customer_id }} - {{ custs.get(r.customer_id, '-') }}</td>
-              <td>{{ r.amount }}</td>
-              <td>{{ r.purchase_type }}</td>
-              <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
-              <td>{{ r.payment_mode }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <table class="table table-hover mt-3">
+      <thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th></tr></thead>
+      <tbody>
+        {% for r in rows_page %}
+          <tr>
+            <td>{{ r.date }}</td>
+            <td>{{ r.order_id }}</td>
+            <td>{{ r.customer_id }} - {{ custs.get(r.customer_id,'-') }}</td>
+            <td>{{ r.amount }}</td>
+            <td>{{ r.purchase_type }}</td>
+            <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
+            <td>{{ r.payment_mode }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
 
-      <script>
-        const monthly = {{ monthly | tojson }};
-        const modes = {{ mode_split | tojson }};
-        new Chart(document.getElementById('cashflow'), { type:'bar', data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Paid (₹)', data: monthly.map(x=>x.amount) }] }, options:{responsive:true} });
-        new Chart(document.getElementById('modes'), { type:'pie', data:{ labels: modes.map(x=>x.mode+' ('+x.count+')'), datasets:[{ data: modes.map(x=>x.count) }] }, options:{responsive:true} });
-      </script>
-    ''', rows=rows, total_revenue=total_revenue, pending_amount=pending_amount, mode_split=mode_split, monthly=monthly, months=months, custs=custs)
+    <nav aria-label="pagination">
+      <ul class="pagination">
+        {% if page>1 %}
+          <li class="page-item"><a class="page-link" href="?page={{ page-1 }}">Previous</a></li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page }} / {{ pages }}</span></li>
+        {% if page<pages %}
+          <li class="page-item"><a class="page-link" href="?page={{ page+1 }}">Next</a></li>
+        {% endif %}
+      </ul>
+    </nav>
+
+    <script>
+      const modes = {{ modes | tojson }};
+      const modeValues = {{ mode_values | tojson }};
+      const totalMode = {{ total_mode_amount }};
+      const ctx = document.getElementById('modeDonut') && document.getElementById('modeDonut').getContext('2d');
+      if(ctx){
+        new Chart(ctx, {
+          type: 'doughnut',
+          data: { labels: modes, datasets: [{ data: modeValues }] },
+          options: {
+            responsive: true,
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function(ctx){
+                    const val = ctx.raw || 0;
+                    const pct = totalMode ? (val/totalMode*100).toFixed(1) : '0.0';
+                    return ctx.label + ': ₹' + val + ' (' + pct + '%)';
+                  }
+                }
+              },
+              legend: { display: true, position: 'bottom' }
+            },
+            onClick: (evt, elems) => {
+              if(elems.length){
+                const idx = elems[0].index;
+                const m = modes[idx];
+                const params = new URLSearchParams(window.location.search);
+                params.set('mode', m);
+                window.location.search = params.toString();
+              }
+            }
+          }
+        });
+      }
+
+      const monthly = {{ monthly | tojson }};
+      const ctx2 = document.getElementById('cashflow') && document.getElementById('cashflow').getContext('2d');
+      if(ctx2){
+        new Chart(ctx2, {
+          type:'bar',
+          data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Amount (₹)', data: monthly.map(x=>x.amount) }] },
+          options:{responsive:true}
+        });
+      }
+    </script>
+    ''',
+    rows_page=rows_page, total_revenue=total_revenue, pending_amount=pending_amount, monthly=monthly, months=months, modes=modes, mode_values=mode_values, total_mode_amount=total_mode_amount, page=page, pages=pages, custs=custs, graph_status=graph_status)
         return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
-
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
         body = '<div class="alert alert-danger">Error generating Payments page. Check server logs.</div>'
         return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
-
-def export_payments():
-    rows = Order.query.all()
-    cols = ['order_id','date','customer_id','saree_type','amount','purchase_type','payment_status','payment_mode']
-    path = rows_to_csv(rows, cols, 'payments.csv')
-    return send_file(path, as_attachment=True, download_name='payments.csv')
-
-# Dashboard
 @app.route('/dashboard')
 def dashboard():
     total_customers = Customer.query.count()
@@ -839,3 +917,15 @@ if __name__ == '__main__':
     print(f'Starting {BUSINESS_NAME} Saree CRM app... DB file: {DB_PATH}')
     app.run(host='0.0.0.0', port=5000, debug=False)
 
+# --- DEBUG: call payments() and show traceback in browser for debugging only ---
+@app.route('/payments_debug')
+def payments_debug():
+    try:
+        # call the existing payments view function
+        return payments()
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        # show traceback in a readable pre block
+        return f"<h3>Payments view traceback (debug)</h3><pre style='white-space:pre-wrap'>{tb}</pre>", 500
+# --- end debug route ---
