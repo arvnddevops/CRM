@@ -27,8 +27,6 @@ BUSINESS_NAME = "vihaa.vastra_sarees"
 DB_FILENAME = 'saree_crm.db'
 DB_PATH = os.path.join(os.path.dirname(__file__), DB_FILENAME)
 
-CRM_LOG_PATH = os.path.join(os.path.dirname(__file__), 'crm.log')
-
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DB_PATH}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -111,9 +109,9 @@ def seed_data():
     db.session.bulk_save_objects(customers)
 
     orders = [
-        Order(order_id='O001', date=today - datetime.timedelta(days=60, delivery_status=request.form.get('delivery_status')), customer_id='C001', saree_type='Soft Silk', amount=2500, payment_status='Paid', delivery_status='Delivered', purchase_type='Online', payment_mode='UPI'),
-        Order(order_id='O002', date=today - datetime.timedelta(days=45, delivery_status=request.form.get('delivery_status')), customer_id='C003', saree_type='Chiffon Floral', amount=1800, payment_status='Paid', delivery_status='Delivered', purchase_type='Offline', payment_mode='Cash'),
-        Order(order_id='O003', date=today - datetime.timedelta(days=30, delivery_status=request.form.get('delivery_status')), customer_id='C002', saree_type='Banarasi', amount=3200, payment_status='Pending', delivery_status='Pending', purchase_type='Online', payment_mode='Pending'),
+        Order(order_id='O001', date=today - datetime.timedelta(days=60), customer_id='C001', saree_type='Soft Silk', amount=2500, payment_status='Paid', delivery_status='Delivered', purchase_type='Online', payment_mode='UPI'),
+        Order(order_id='O002', date=today - datetime.timedelta(days=45), customer_id='C003', saree_type='Chiffon Floral', amount=1800, payment_status='Paid', delivery_status='Delivered', purchase_type='Offline', payment_mode='Cash'),
+        Order(order_id='O003', date=today - datetime.timedelta(days=30), customer_id='C002', saree_type='Banarasi', amount=3200, payment_status='Pending', delivery_status='Pending', purchase_type='Online', payment_mode='Pending'),
     ]
     db.session.bulk_save_objects(orders)
 
@@ -267,7 +265,7 @@ def customers():
         </tbody>
       </table>
     ''', rows=rows)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 @app.route('/customers/edit/<cid>', methods=['GET'])
 def edit_customer(cid):
@@ -290,7 +288,7 @@ def edit_customer(cid):
         </div>
       </form>
     ''', c=c)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 # Orders CRUD with search, sorting, monthly filter
 @app.route('/orders', methods=['GET','POST'])
@@ -349,9 +347,9 @@ def orders():
         # fallback to a safe ordering in case of unexpected DB/schema issues
         rows = qbase.order_by(Order.date.desc()).all()
     # eager load customer names into a dict to display
-    custs = {c.customer_id: c.name for c in Customer.query.order_by(Customer.id.desc()).all()}
+    custs = {c.customer_id: c.name for c in Customer.query.all()}
 
-    customers = Customer.query.order_by(Customer.id.desc()).all()
+    customers = Customer.query.all()
     months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
     months = [r.m for r in months]
 
@@ -377,85 +375,32 @@ def orders():
         </div>
       </div>
       <div class="card p-3 mb-3">
-        
-<form method="post">
-  <div class="row g-2">
-    <div class="col-md-2"><input class="form-control" name="order_id" placeholder="Order ID (optional)"/></div>
-    <div class="col-md-2"><input class="form-control" type="date" name="date"/></div>
-    <div class="col-md-3">
-      <select name="customer_id" class="form-select" required>
-        <option value="">-- Select Customer --</option>
-        {% for c in customers %}
-          <option value="{{ c.customer_id }}">{{ c.customer_id }} - {{ c.name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="col-md-2"><input class="form-control" name="saree_type" placeholder="Saree Type"/></div>
-    <div class="col-md-1"><input class="form-control" name="amount" placeholder="Amt"/></div>
-    <div class="col-md-2">
-      <select name="purchase_type" class="form-select" required>
-        <option value="">-- Select Purchase Type --</option>
-        <option>Online</option>
-        <option>Offline</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="row g-2 mt-2 align-items-center">
-    <div class="col-md-2">
-      <select name="payment_status" id="payment_status" class="form-select" required>
-        <option value="">-- Select Payment Status --</option>
-        <option value="Pending">Pending</option>
-        <option value="Paid">Paid</option>
-      </select>
-    </div>
-
-    <div class="col-md-2">
-      <select name="payment_mode" id="payment_mode" class="form-select">
-        <option value="">-- Select Payment Mode --</option>
-        <option value="UPI">UPI</option>
-        <option value="Cash">Cash</option>
-        <option value="Pending">Pending</option>
-      </select>
-    </div>
-
-    <div class="col-md-2">
-      <select name="delivery_status" id="delivery_status" class="form-select">
-        <option value="">-- Select Delivery Status --</option>
-        <option value="Shipped">Shipped</option>
-        <option value="Delivered">Delivered</option>
-        <option value="Cancelled">Cancelled</option>
-      </select>
-    </div>
-
-    <div class="col-md-3"><input class="form-control" name="remarks" placeholder="Remarks"/></div>
-    <div class="col-md-1"><button class="btn btn-primary w-100" type="submit">Add Order</button></div>
-  </div>
-</form>
-
-<script>
-  // form-scoped toggle using element IDs used above; safe and simple
-  (function(){
-    function togglePaymentMode() {
-      try {
-        var st = document.getElementById('payment_status') && document.getElementById('payment_status').value;
-        var mode = document.getElementById('payment_mode');
-        if(!mode) return;
-        if (st == 'Pending' || st == '' || st == null) {
-          mode.value = 'Pending';
-          mode.disabled = true;
-        } else {
-          if (mode.value === 'Pending') mode.value = '';
-          mode.disabled = false;
-        }
-      } catch(e){ console.log('togglePaymentMode',e); }
-    }
-    var stEl = document.getElementById('payment_status');
-    if(stEl) stEl.addEventListener('change', togglePaymentMode);
-    window.addEventListener('load', togglePaymentMode);
-  })();
-</script>
-
+        <form method="post">
+          <div class="row g-2">
+            <div class="col-md-2"><input class="form-control" name="order_id" placeholder="Order ID (optional)"/></div>
+            <div class="col-md-2"><input class="form-control" type="date" name="date"/></div>
+            <div class="col-md-3">
+              <select name="customer_id" class="form-select" required>
+                <option value="">-- Select Customer --</option>
+                {% for c in customers %}
+                  <option value="{{ c.customer_id }}">{{ c.customer_id }} - {{ c.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2"><input class="form-control" name="saree_type" placeholder="Saree Type"/></div>
+            <div class="col-md-1"><input class="form-control" name="amount" placeholder="Amt"/></div>
+            <div class="col-md-2">
+              <select name="purchase_type" class="form-select"><option>Online</option><option>Offline</option></select>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-md-2"><select name="payment_status" class="form-select"><option>Paid</option><option>Pending</option></select></div>
+            <div class="col-md-2"><select name="payment_mode" class="form-select"><option>UPI</option><option>Cash</option><option>Pending</option></select></div>
+            <div class="col-md-3"><select name="delivery_status" class="form-select"><option>Pending</option><option>Shipped</option><option>Delivered</option></select></div>
+            <div class="col-md-3"><input class="form-control" name="remarks" placeholder="Remarks"/></div>
+            <div class="col-md-2"><button class="btn btn-primary w-100">Add Order</button></div>
+          </div>
+        </form>
       </div>
       <table class="table table-hover">
         <thead><tr><th>Order ID</th><th>Date</th><th>Customer</th><th>Saree</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th><th>Delivery</th><th>Actions</th></tr></thead>
@@ -484,12 +429,12 @@ def orders():
         </tbody>
       </table>
     ''', rows=rows, customers=customers, custs=custs, months=months)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 @app.route('/orders/edit/<oid>', methods=['GET'])
 def edit_order(oid):
     o = Order.query.filter_by(order_id=oid).first_or_404()
-    customers = Customer.query.order_by(Customer.id.desc()).all()
+    customers = Customer.query.all()
     body = render_template_string('''
       <h3>Edit Order {{ o.order_id }}</h3>
       <form method="post" action="/orders">
@@ -506,48 +451,18 @@ def edit_order(oid):
           </div>
           <div class="col-md-3"><input class="form-control" name="saree_type" value="{{ o.saree_type }}"/></div>
           <div class="col-md-1"><input class="form-control" name="amount" value="{{ o.amount }}"/></div>
-          <div class="col-md-2"><select required required required name="purchase_type" data-has-placeholder="1" class="form-select"><option value="">-- Select Purchase Type --</option><option {% if o.purchase_type=='Online' %}selected{% endif %}>Online</option><option {% if o.purchase_type=='Offline' %}selected{% endif %}>Offline</option></select></div>
-          <div class="col-md-1"><select name="payment_mode" id="payment_mode" class="form-select"><option value="">-- Select Payment Mode --</option><option value="UPI">UPI</option><option value="Cash">Cash</option><option value="Pending">Pending</option></select>
-<select name="delivery_status" class="form-select ms-2">
-  <option value="">-- Select Delivery Status --</option>
-  <option value="Shipped">Shipped</option>
-  <option value="Delivered">Delivered</option>
-  <option value="Cancelled">Cancelled</option>
-</select>
-<!-- auto-toggle script for this form -->
-<script>
-(function(){
-  function togglePaymentModeLocal() {
-    try {
-      var st = document.querySelector('[name="payment_status"]') && document.querySelector('[name="payment_status"]').value;
-      var mode = document.getElementById('payment_mode');
-      if(!mode) return;
-      if (st == 'Pending' || st == '' || st == null) {
-        mode.value = 'Pending';
-        mode.disabled = true;
-      } else {
-        if (mode.value === 'Pending') mode.value = '';
-        mode.disabled = false;
-      }
-    } catch(e){ console.log('togglePaymentModeLocal', e); }
-  }
-  // bind change
-  var el = document.querySelector('[name="payment_status"]');
-  if(el){ el.addEventListener('change', togglePaymentModeLocal); }
-  window.addEventListener('load', togglePaymentModeLocal);
-})();
-</script>
-</div>
+          <div class="col-md-2"><select name="purchase_type" class="form-select"><option {% if o.purchase_type=='Online' %}selected{% endif %}>Online</option><option {% if o.purchase_type=='Offline' %}selected{% endif %}>Offline</option></select></div>
+          <div class="col-md-1"><select name="payment_mode" class="form-select"><option {% if o.payment_mode=='UPI' %}selected{% endif %}>UPI</option><option {% if o.payment_mode=='Cash' %}selected{% endif %}>Cash</option><option {% if o.payment_mode=='Pending' %}selected{% endif %}>Pending</option></select></div>
         </div>
         <div class="row g-2 mt-2">
-          <div class="col-md-2"><select required name="payment_status" id="payment_status" class="form-select"><option value="">-- Select Payment Status --</option><option value="Pending">Pending</option><option value="Paid">Paid</option></select></div>
+          <div class="col-md-2"><select name="payment_status" class="form-select"><option {% if o.payment_status=='Paid' %}selected{% endif %}>Paid</option><option {% if o.payment_status=='Pending' %}selected{% endif %}>Pending</option></select></div>
           <div class="col-md-3"><select name="delivery_status" class="form-select"><option {% if o.delivery_status=='Pending' %}selected{% endif %}>Pending</option><option {% if o.delivery_status=='Shipped' %}selected{% endif %}>Shipped</option><option {% if o.delivery_status=='Delivered' %}selected{% endif %}>Delivered</option></select></div>
           <div class="col-md-5"><input class="form-control" name="remarks" value="{{ o.remarks }}"/></div>
           <div class="col-md-2"><button class="btn btn-primary">Save</button> <a class="btn btn-secondary" href="/orders">Cancel</a></div>
         </div>
       </form>
     ''', o=o, customers=customers)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 # Follow-ups CRUD with search
 @app.route('/followups', methods=['GET','POST'])
@@ -624,7 +539,7 @@ def followups():
         </tbody>
       </table>
     ''', rows=rows)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 @app.route('/followups/edit/<fid>', methods=['GET'])
 def edit_followup(fid):
@@ -648,10 +563,9 @@ def edit_followup(fid):
         </div>
       </form>
     ''', f=f)
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 # Payments - aggregated from Orders (no manual payments table)
-
 
 @app.route('/payments')
 def payments():
@@ -660,203 +574,126 @@ def payments():
         month = request.args.get('month','')  # YYYY-MM
         status = request.args.get('status','')  # Paid/Pending
         mode = request.args.get('mode','')  # UPI/Cash/Pending
-        sort = request.args.get('sort','date')  # date / amount / status
-        page = int(request.args.get('page','1') or 1)
-        page = max(1,page)
-        page_size = 50
 
         qbase = Order.query
         if month:
-            qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==month)
+            try:
+                y,m = month.split('-')
+                qbase = qbase.filter(func.strftime('%Y-%m', Order.date)==f'{y}-{m}')
+            except Exception:
+                pass
         if status:
             qbase = qbase.filter(Order.payment_status==status)
         if mode:
             qbase = qbase.filter(Order.payment_mode==mode)
 
-        # ordering
-        if sort == 'amount':
-            rows = qbase.order_by(Order.amount.desc()).all()
-        elif sort == 'status':
-            rows = qbase.order_by(Order.payment_status.asc(), Order.date.desc()).all()
-        else:
-            rows = qbase.order_by(db.case((Order.payment_status=='Pending', 0), else_=1), Order.date.desc()).all()
+        rows = qbase.order_by(Order.date.desc()).all()
 
-        total = len(rows)
-        pages = (total + page_size - 1)//page_size
-        rows_page = rows[(page-1)*page_size : page*page_size]
+        # prepare data structures for template (avoid ORM calls inside template)
+        custs = {c.customer_id: c.name for c in Customer.query.all()}
 
-        # customer map
-        custs = {c.customer_id: c.name for c in Customer.query.order_by(Customer.id.desc()).all()}
+        # Summaries
+        total_revenue_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid')
+        if month:
+            total_revenue_q = total_revenue_q.filter(func.strftime('%Y-%m', Order.date)==month)
+        total_revenue = int(total_revenue_q.scalar() or 0)
 
-        # Payment mode breakdown (for donut)
-        mode_q = db.session.query(Order.payment_mode, func.coalesce(func.sum(Order.amount),0).label('sum')).group_by(Order.payment_mode).all()
-        mode_map = { (r[0] if r[0] else 'Pending'): int(r[1]) for r in mode_q }
-        modes = ['UPI','Cash','Pending']
-        mode_values = [ mode_map.get(m,0) for m in modes ]
-        total_mode_amount = sum(mode_values)
+        pending_amount_q = db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending')
+        if month:
+            pending_amount_q = pending_amount_q.filter(func.strftime('%Y-%m', Order.date)==month)
+        pending_amount = int(pending_amount_q.scalar() or 0)
 
-        # Graph data depends on selected status (default Paid)
-        graph_status = status if status else 'Paid'
-        monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.coalesce(func.sum(Order.amount),0).label('sum')).filter(Order.payment_status==graph_status).group_by('m').order_by('m').all()
+        # Mode split
+        mode_q = db.session.query(Order.payment_mode, func.count(Order.id)).group_by(Order.payment_mode).all()
+        mode_split = [{'mode': (r[0] or 'Pending'),'count': r[1]} for r in mode_q]
+
+        # Monthly cashflow (Paid orders)
+        monthly_q = db.session.query(func.strftime('%Y-%m', Order.date).label('m'), func.coalesce(func.sum(Order.amount),0).label('sum')).filter(Order.payment_status=='Paid').group_by('m').order_by('m').all()
         monthly = [{'month':r.m,'amount':int(r.sum)} for r in monthly_q]
+
         months = db.session.query(func.strftime('%Y-%m', Order.date).label('m')).group_by('m').order_by('m').all()
         months = [r.m for r in months]
 
-        # totals for cards
-        total_revenue = int(db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Paid').scalar() or 0)
-        pending_amount = int(db.session.query(func.coalesce(func.sum(Order.amount),0)).filter(Order.payment_status=='Pending').scalar() or 0)
-
         body = render_template_string('''
-    <h3>Payments</h3>
-
-    <div class="row mb-3">
-      <div class="col-md-4">
-        <div class="card p-2 text-center">
-          <small>Payment Mode (Donut)</small>
-          <canvas id="modeDonut" style="max-height:240px"></canvas>
-          <div class="mt-2">
-            <strong>Total: ₹{{ total_mode_amount }}</strong>
-          </div>
-          <div class="mt-2">
-            <ul class="list-unstyled small text-start">
-              {% for m in modes %}
-                <li><span style="display:inline-block;width:12px;height:12px;background:var(--chart-color-{{ loop.index0 }});margin-right:6px;"></span>{{ m }} — ₹{{ mode_values[loop.index0] }} ({{ ('%0.1f' % ((mode_values[loop.index0]/(total_mode_amount or 1))*100)) }}%)</li>
-              {% endfor %}
-            </ul>
-          </div>
-        </div>
+      <h3>Payments</h3>
+      <div class="d-flex mb-3">
+        <form class="me-2" method="get">
+          <select name="month" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Months</option>
+            {% for m in months %}
+              <option value="{{ m }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        <form class="me-2">
+          <select name="status" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Status</option>
+            <option value="Paid" {% if request.args.get('status','')=='Paid' %}selected{% endif %}>Paid</option>
+            <option value="Pending" {% if request.args.get('status','')=='Pending' %}selected{% endif %}>Pending</option>
+          </select>
+        </form>
+        <form>
+          <select name="mode" class="form-select me-2" onchange="this.form.submit()">
+            <option value="">All Modes</option>
+            <option value="UPI" {% if request.args.get('mode','')=='UPI' %}selected{% endif %}>UPI</option>
+            <option value="Cash" {% if request.args.get('mode','')=='Cash' %}selected{% endif %}>Cash</option>
+            <option value="Pending" {% if request.args.get('mode','')=='Pending' %}selected{% endif %}>Pending</option>
+          </select>
+        </form>
+        <a class="btn btn-sm btn-secondary ms-auto" href="/export/payments">Export CSV</a>
       </div>
 
-      <div class="col-md-8">
-        <div class="d-flex mb-2">
-          <form class="me-2" method="get">
-            <select name="month" class="form-select me-2" onchange="this.form.submit()">
-              <option value="">All Months</option>
-              {% for m in months %}
-                <option value="{{ m }}" {% if request.args.get('month','')==m %}selected{% endif %}>{{ m }}</option>
-              {% endfor %}
-            </select>
-
-            <select name="status" class="form-select me-2" onchange="this.form.submit()">
-              <option value="">Show (default Paid)</option>
-              <option value="Paid" {% if request.args.get('status','')=='Paid' %}selected{% endif %}>Paid</option>
-              <option value="Pending" {% if request.args.get('status','')=='Pending' %}selected{% endif %}>Pending</option>
-            </select>
-
-            <select name="sort" class="form-select me-2" onchange="this.form.submit()">
-              <option value="date" {% if request.args.get('sort','')=='date' %}selected{% endif %}>Sort: Date</option>
-              <option value="amount" {% if request.args.get('sort','')=='amount' %}selected{% endif %}>Sort: Amount (desc)</option>
-              <option value="status" {% if request.args.get('sort','')=='status' %}selected{% endif %}>Sort: Payment Status</option>
-            </select>
-
-            <select name="mode" class="form-select me-2" onchange="this.form.submit()">
-              <option value="">All Modes</option>
-              <option value="UPI" {% if request.args.get('mode','')=='UPI' %}selected{% endif %}>UPI</option>
-              <option value="Cash" {% if request.args.get('mode','')=='Cash' %}selected{% endif %}>Cash</option>
-              <option value="Pending" {% if request.args.get('mode','')=='Pending' %}selected{% endif %}>Pending</option>
-            </select>
-          </form>
-
-          <a class="btn btn-sm btn-secondary ms-auto" href="/export/payments">Export CSV</a>
-        </div>
-
-        <div class="card p-2 mb-2">
-          <small>Monthly Totals ({{ graph_status }})</small>
-          <canvas id="cashflow" style="max-height:240px"></canvas>
-        </div>
-
-        <div class="d-flex">
-          <div class="me-3"><small>Monthly Revenue (Paid)</small><div><strong>₹{{ total_revenue }}</strong></div></div>
-          <div><small>Pending Amount</small><div><strong>₹{{ pending_amount }}</strong></div></div>
-        </div>
+      <div class="row mb-3">
+        <div class="col-md-3"><div class="card p-2"><small>Monthly Revenue (Paid)</small><h4>₹{{ total_revenue }}</h4></div></div>
+        <div class="col-md-3"><div class="card p-2"><small>Pending Amount</small><h4>₹{{ pending_amount }}</h4></div></div>
+        <div class="col-md-3"><div class="card p-2"><small>Payment Mode Split</small><h4>{{ mode_split|length }} modes</h4></div></div>
       </div>
-    </div>
 
-    <hr/>
+      <div class="row">
+        <div class="col-md-6"><canvas id="cashflow"></canvas></div>
+        <div class="col-md-6"><canvas id="modes"></canvas></div>
+      </div>
 
-    <table class="table table-hover mt-3">
-      <thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th></tr></thead>
-      <tbody>
-        {% for r in rows_page %}
-          <tr>
-            <td>{{ r.date }}</td>
-            <td>{{ r.order_id }}</td>
-            <td>{{ r.customer_id }} - {{ custs.get(r.customer_id,'-') }}</td>
-            <td>{{ r.amount }}</td>
-            <td>{{ r.purchase_type }}</td>
-            <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
-            <td>{{ r.payment_mode }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+      <hr/>
+      <table class="table table-hover mt-3">
+        <thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amt</th><th>Purchase</th><th>Payment</th><th>Mode</th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.date }}</td>
+              <td>{{ r.order_id }}</td>
+              <td>{{ r.customer_id }} - {{ custs.get(r.customer_id, '-') }}</td>
+              <td>{{ r.amount }}</td>
+              <td>{{ r.purchase_type }}</td>
+              <td {% if r.payment_status=='Pending' %}class="text-danger"{% endif %}>{{ r.payment_status }}</td>
+              <td>{{ r.payment_mode }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
 
-    <nav aria-label="pagination">
-      <ul class="pagination">
-        {% if page>1 %}
-          <li class="page-item"><a class="page-link" href="?page={{ page-1 }}">Previous</a></li>
-        {% endif %}
-        <li class="page-item disabled"><span class="page-link">Page {{ page }} / {{ pages }}</span></li>
-        {% if page<pages %}
-          <li class="page-item"><a class="page-link" href="?page={{ page+1 }}">Next</a></li>
-        {% endif %}
-      </ul>
-    </nav>
+      <script>
+        const monthly = {{ monthly | tojson }};
+        const modes = {{ mode_split | tojson }};
+        new Chart(document.getElementById('cashflow'), { type:'bar', data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Paid (₹)', data: monthly.map(x=>x.amount) }] }, options:{responsive:true} });
+        new Chart(document.getElementById('modes'), { type:'pie', data:{ labels: modes.map(x=>x.mode+' ('+x.count+')'), datasets:[{ data: modes.map(x=>x.count) }] }, options:{responsive:true} });
+      </script>
+    ''', rows=rows, total_revenue=total_revenue, pending_amount=pending_amount, mode_split=mode_split, monthly=monthly, months=months, custs=custs)
+        return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
-    <script>
-      const modes = {{ modes | tojson }};
-      const modeValues = {{ mode_values | tojson }};
-      const totalMode = {{ total_mode_amount }};
-      const ctx = document.getElementById('modeDonut') && document.getElementById('modeDonut').getContext('2d');
-      if(ctx){
-        new Chart(ctx, {
-          type: 'doughnut',
-          data: { labels: modes, datasets: [{ data: modeValues }] },
-          options: {
-            responsive: true,
-            plugins: {
-              tooltip: {
-                callbacks: {
-                  label: function(ctx){
-                    const val = ctx.raw || 0;
-                    const pct = totalMode ? (val/totalMode*100).toFixed(1) : '0.0';
-                    return ctx.label + ': ₹' + val + ' (' + pct + '%)';
-                  }
-                }
-              },
-              legend: { display: true, position: 'bottom' }
-            },
-            onClick: (evt, elems) => {
-              if(elems.length){
-                const idx = elems[0].index;
-                const m = modes[idx];
-                const params = new URLSearchParams(window.location.search);
-                params.set('mode', m);
-                window.location.search = params.toString();
-              }
-            }
-          }
-        });
-      }
-
-      const monthly = {{ monthly | tojson }};
-      const ctx2 = document.getElementById('cashflow') && document.getElementById('cashflow').getContext('2d');
-      if(ctx2){
-        new Chart(ctx2, {
-          type:'bar',
-          data:{ labels: monthly.map(x=>x.month), datasets:[{ label:'Amount (₹)', data: monthly.map(x=>x.amount) }] },
-          options:{responsive:true}
-        });
-      }
-    </script>
-    ''',
-    rows_page=rows_page, total_revenue=total_revenue, pending_amount=pending_amount, monthly=monthly, months=months, modes=modes, mode_values=mode_values, total_mode_amount=total_mode_amount, page=page, pages=pages, custs=custs, graph_status=graph_status)
-        return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
-    except Exception:
+    except Exception as e:
         import traceback
         traceback.print_exc()
         body = '<div class="alert alert-danger">Error generating Payments page. Check server logs.</div>'
-        return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+        return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
+
+def export_payments():
+    rows = Order.query.all()
+    cols = ['order_id','date','customer_id','saree_type','amount','purchase_type','payment_status','payment_mode']
+    path = rows_to_csv(rows, cols, 'payments.csv')
+    return send_file(path, as_attachment=True, download_name='payments.csv')
+
+# Dashboard
 @app.route('/dashboard')
 def dashboard():
     total_customers = Customer.query.count()
@@ -938,7 +775,7 @@ def dashboard():
       </script>
     ''', total_customers=total_customers, total_orders=total_orders, total_sales=total_sales, avg_order=avg_order, pending_payments=pending_payments, pending_delivery=pending_delivery, pending_followups=pending_followups, monthly=monthly, saree_dist=saree_dist, topc=topc)
 
-    return render_template_string(BASE_TEMPLATE, body=body + _payment_mode_script, business=BUSINESS_NAME, dbfile=DB_PATH)
+    return render_template_string(BASE_TEMPLATE, body=body, business=BUSINESS_NAME, dbfile=DB_PATH)
 
 # Export CSVs (helpers)
 
@@ -957,7 +794,7 @@ def rows_to_csv(rows, cols, filename):
 
 @app.route('/export/customers')
 def export_customers():
-    rows = Customer.query.order_by(Customer.id.desc()).all()
+    rows = Customer.query.all()
     cols = ['customer_id','name','insta','phone','city','ctype','notes']
     path = rows_to_csv(rows, cols, 'customers.csv')
     return send_file(path, as_attachment=True, download_name='customers.csv')
@@ -983,7 +820,7 @@ def export_all():
 # API endpoints (JSON)
 @app.route('/api/customers')
 def api_customers():
-    return jsonify([c.to_dict() for c in Customer.query.order_by(Customer.id.desc()).all()])
+    return jsonify([c.to_dict() for c in Customer.query.all()])
 
 @app.route('/api/orders')
 def api_orders():
@@ -995,83 +832,10 @@ def api_followups():
 
 # --- Init & run -------------------------------------------------------------
 if __name__ == '__main__':
-    # Initialize DB only when running with 'python saree_crm_flask_app.py'
     with app.app_context():
         db.create_all()
         ensure_columns()
         seed_data()
     print(f'Starting {BUSINESS_NAME} Saree CRM app... DB file: {DB_PATH}')
     app.run(host='0.0.0.0', port=5000, debug=False)
-# --- DEBUG: call payments() and show traceback in browser for debugging only ---
-@app.route('/payments_debug')
-def payments_debug():
-    try:
-        # call the existing payments view function
-        return payments()
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        # show traceback in a readable pre block
-        return f"<h3>Payments view traceback (debug)</h3><pre style='white-space:pre-wrap'>{tb}</pre>", 500
-# --- end debug route ---
 
-
-# --- injected JS helper for order forms: toggles payment_mode based on payment_status ---
-_js = '''
-<script>
-function togglePaymentMode() {
-  try {
-    var stElem = document.querySelector('[name="payment_status"]');
-    var mode = document.getElementById('payment_mode');
-    if(!mode || !stElem) return;
-    var st = stElem.value;
-    if (st == 'Pending' || st == '') {
-      mode.value = 'Pending';
-      mode.disabled = true;
-    } else {
-      if (mode.value === 'Pending') mode.value = '';
-      mode.disabled = false;
-    }
-  } catch(e){ console.log('togglePaymentMode',e); }
-}
-document.addEventListener('change', function(e){
-  if(e.target && e.target.name == 'payment_status'){ togglePaymentMode(); }
-});
-window.addEventListener('load', function(){ togglePaymentMode(); });
-</script>
-'''
-# Note: order form templates should load this JS snippet somewhere, for example by including _js variable in BASE_TEMPLATE or by copying the script manually into templates.
-
-
-# -- AUTO-INJECTED: payment_mode toggle script --
-
-# -- AUTO-INJECTED: payment_mode toggle script --
-def _inject_payment_mode_toggle():
-    pass
-# (below is inline JS inserted into templates via render_template_string calls)
-_payment_mode_script = '''
-<script>
-(function(){
-  function togglePaymentMode() {
-    try {
-      var statusEl = document.getElementById('payment_status') || document.querySelector('[name="payment_status"]');
-      var modeEl = document.getElementById('payment_mode') || document.querySelector('[name="payment_mode"]');
-      if(!modeEl) return;
-      var st = statusEl ? statusEl.value : '';
-      if (st == 'Pending' || st === '' || st === null) {
-        modeEl.value = 'Pending';
-        modeEl.disabled = true;
-      } else {
-        if (modeEl.value === 'Pending') modeEl.value = '';
-        modeEl.disabled = false;
-      }
-    } catch(e){ console.log('togglePaymentMode',e); }
-  }
-  document.addEventListener('change', function(e){
-    if(e.target && (e.target.id=='payment_status' || e.target.name=='payment_status')){ togglePaymentMode(); }
-  });
-  window.addEventListener('load', togglePaymentMode);
-})();
-</script>
-'''
-# end auto-inject
