@@ -766,7 +766,7 @@ def payments():
         </div>
 
         <div class="d-flex">
-          <div class="me-3"><small>Monthly Revenue (Paid)</small><div><strong>₹{{ total_revenue }}</strong></div></div>
+          <div class="me-3"><small>Revenue</small><div><strong>₹{{ total_revenue }}</strong></div></div>
           <div><small>Pending Amount</small><div><strong>₹{{ pending_amount }}</strong></div></div>
         </div>
       </div>
